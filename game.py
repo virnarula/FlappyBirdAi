@@ -42,20 +42,26 @@ while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+        if event.type == pygame.KEYDOWN:
+            print("Space bar pressed")
+            bird_velocity = -6
 
     # update pipe x positions
     for i in range(0, NUM_PIPES):
         pipeX[i] = pipeX[i] - pipeVelocity
+        if pipeX[i] < -PIPE_WIDTH:
+            pipeX[i] = NUM_PIPES * PIPE_DISTANCE
 
     screen.fill((3, 182, 252))  # draw background
 
     # draw pipes
     for i in range(0, NUM_PIPES):
-        bottomPipes[i] = pygame.Rect(pipeX[i], WINDOW_HEIGHT / 2 + PIPE_GAP, PIPE_WIDTH, WINDOW_HEIGHT/2 - PIPE_GAP)
-        topPipes[i] = pygame.Rect(pipeX[i], 0, PIPE_WIDTH, WINDOW_HEIGHT/2 - PIPE_GAP)
+        bottomPipes[i] = pygame.Rect(pipeX[i], WINDOW_HEIGHT / 2 + PIPE_GAP, PIPE_WIDTH, WINDOW_HEIGHT / 2 - PIPE_GAP)
+        topPipes[i] = pygame.Rect(pipeX[i], 0, PIPE_WIDTH, WINDOW_HEIGHT / 2 - PIPE_GAP)
         pygame.draw.rect(screen, (0, 255, 0), bottomPipes[i])
         pygame.draw.rect(screen, (0, 255, 0), topPipes[i])
 
+    # draw bird
     if bird_y <= WINDOW_HEIGHT:
         bird_velocity = bird_velocity + GRAVITY
         bird_y += int(bird_velocity)
