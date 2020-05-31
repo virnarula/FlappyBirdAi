@@ -1,5 +1,6 @@
 import pygame
 import random
+import math
 
 # Size of Game
 WINDOW_HEIGHT = 800
@@ -20,17 +21,47 @@ topPipes = []
 BIRD_RADIUS = 20
 
 # Movement of bird
-BIRD_X = int(WINDOW_WIDTH / 2)
+BIRD_X = int(WINDOW_WIDTH / 2 - BIRD_RADIUS / 2)
 bird_y = int(WINDOW_HEIGHT / 2 - BIRD_RADIUS / 2)
 GRAVITY = 0.2
 bird_velocity = 0
 score = 0
 scoringTube = 0
 
+
 def getRandGap():
     toReturn = int((random.random() - 0.5) * 0.75 * WINDOW_HEIGHT)
-    print(toReturn)
     return toReturn
+
+
+def collision(rleft, rtop, width, height,  # rectangle definition
+              center_x, center_y, radius):  # circle definition
+
+    # complete boundbox of the rectangle
+    rright, rbottom = rleft + width, rtop + height
+
+    # bounding box of the circle
+    cleft, ctop = center_x - radius, center_y - radius
+    cright, cbottom = center_x + radius, center_y + radius
+
+    # trivial reject if bounding boxes do not intersect
+    if rright < cleft or rleft > cright or rbottom < ctop or rtop > cbottom:
+        return False  # no collision possible
+
+    # check whether any point of rectangle is inside circle's radius
+    for x in (rleft, rleft + width):
+        for y in (rtop, rtop + height):
+            # compare distance between circle's center point and each point of
+            # the rectangle with the circle's radius
+            if math.hypot(x - center_x, y - center_y) <= radius * 2:
+                return True  # collision detected
+
+    # check if center of circle is inside rectangle
+    if rleft <= center_x <= rright and rtop <= center_y <= rbottom:
+        return True  # overlaid
+
+    return False  # no collision detected
+
 
 # On Creation
 pygame.init()
@@ -51,7 +82,6 @@ while running:
         if event.type == pygame.QUIT:
             running = False
         if event.type == pygame.KEYDOWN:
-            print("Space bar pressed")
             bird_velocity = -6
 
     # update pipe x positions
@@ -65,7 +95,8 @@ while running:
 
     # draw pipes
     for i in range(0, NUM_PIPES):
-        bottomPipes[i] = pygame.Rect(pipeX[i], WINDOW_HEIGHT / 2 + PIPE_GAP - pipeOffset[i], PIPE_WIDTH, WINDOW_HEIGHT / 2 - PIPE_GAP + pipeOffset[i])
+        bottomPipes[i] = pygame.Rect(pipeX[i], WINDOW_HEIGHT / 2 + PIPE_GAP - pipeOffset[i], PIPE_WIDTH,
+                                     WINDOW_HEIGHT / 2 - PIPE_GAP + pipeOffset[i])
         topPipes[i] = pygame.Rect(pipeX[i], 0, PIPE_WIDTH, WINDOW_HEIGHT / 2 - PIPE_GAP - pipeOffset[i])
         pygame.draw.rect(screen, (0, 255, 0), bottomPipes[i])
         pygame.draw.rect(screen, (0, 255, 0), topPipes[i])
@@ -76,12 +107,47 @@ while running:
         bird_y += int(bird_velocity)
     birdCircle = pygame.draw.circle(screen, (255, 0, 0), (BIRD_X, bird_y), BIRD_RADIUS)
 
+    # check if point has been scored
     if pipeX[scoringTube] < WINDOW_WIDTH / 2 - PIPE_WIDTH:
         score += 1
         print("score: " + str(score))
         scoringTube += 1
         if scoringTube == NUM_PIPES:
             scoringTube = 0
+
+    # Check for collisions
+    for i in range(0, NUM_PIPES):
+        if collision(bottomPipes[i].left, bottomPipes[i].top, bottomPipes[i].width, bottomPipes[i].height, BIRD_X,
+                     bird_y, BIRD_RADIUS):
+            print("Collision with bottom tube")
+            running = False
+        if collision(topPipes[i].left, topPipes[i].top, topPipes[i].width, topPipes[i].height, BIRD_X, bird_y,
+                     BIRD_RADIUS):
+            print("Collision with top tube")
+            running = False
+
+    pygame.display.flip()
+    pygame.time.delay(10)
+
+while True:
+
+    # If player quits game
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+
+    screen.fill((3, 182, 252))  # draw background
+
+    # draw pipes
+    for i in range(0, NUM_PIPES):
+        bottomPipes[i] = pygame.Rect(pipeX[i], WINDOW_HEIGHT / 2 + PIPE_GAP - pipeOffset[i], PIPE_WIDTH,
+                                     WINDOW_HEIGHT / 2 - PIPE_GAP + pipeOffset[i])
+        topPipes[i] = pygame.Rect(pipeX[i], 0, PIPE_WIDTH, WINDOW_HEIGHT / 2 - PIPE_GAP - pipeOffset[i])
+        pygame.draw.rect(screen, (0, 255, 0), bottomPipes[i])
+        pygame.draw.rect(screen, (0, 255, 0), topPipes[i])
+
+    # draw bird
+    birdCircle = pygame.draw.circle(screen, (255, 0, 0), (BIRD_X, bird_y), BIRD_RADIUS)
 
     pygame.display.flip()
     pygame.time.delay(10)
