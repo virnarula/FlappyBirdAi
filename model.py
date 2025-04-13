@@ -39,6 +39,7 @@ class ValueLearning(Model):
         
         self.model = torch.nn.Sequential(
             torch.nn.Linear(state_size, 64),
+            torch.nn.BatchNorm1d(64),
             torch.nn.ReLU(),
             torch.nn.Linear(64, action_size)
         )
