@@ -80,7 +80,7 @@ class game():
         pygame.init()
         screen = pygame.display.set_mode([self.WINDOW_WIDTH, self.WINDOW_HEIGHT])
         running = True
-        game_started = False  # New variable to track game start
+        game_started = model_given  # Start immediately if model is given
 
         for i in range(0, self.NUM_PIPES):
             self.pipeX.append(self.WINDOW_WIDTH + i * self.PIPE_DISTANCE)
