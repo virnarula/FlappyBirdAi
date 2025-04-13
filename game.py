@@ -80,6 +80,7 @@ class game():
         pygame.init()
         screen = pygame.display.set_mode([self.WINDOW_WIDTH, self.WINDOW_HEIGHT])
         running = True
+        game_started = False  # New variable to track game start
 
         for i in range(0, self.NUM_PIPES):
             self.pipeX.append(self.WINDOW_WIDTH + i * self.PIPE_DISTANCE)
@@ -96,15 +97,6 @@ class game():
             dist_to_opening_bottom = 0
             dist_to_opening_top = 0
             
-            # update pipe x positions
-            for i in range(0, self.NUM_PIPES):
-                self.pipeX[i] = self.pipeX[i] - self.pipeVelocity
-                
-                # reset pipe if off screen
-                if self.pipeX[i] < -self.PIPE_WIDTH:
-                    self.pipeX[i] = self.NUM_PIPES * self.PIPE_DISTANCE
-                    self.pipeOffset[i] = self.get_rand_gap()
-
             screen.fill((3, 182, 252))  # draw background
 
             # draw pipes
@@ -121,23 +113,35 @@ class game():
                     pygame.quit()
                     return self.score
                 if not model_given and event.type == pygame.KEYDOWN:
-                    self.bird_velocity = -6
+                    if event.key == pygame.K_SPACE:
+                        game_started = True  # Start the game on space bar press
+                        self.bird_velocity = -6
+
+            if game_started:
+                # update pipe x positions
+                for i in range(0, self.NUM_PIPES):
+                    self.pipeX[i] = self.pipeX[i] - self.pipeVelocity
                     
-            # get distances to objects
-            dist_to_top = self.BIRD_Y
-            dist_to_bottom = self.WINDOW_HEIGHT - self.BIRD_Y
-            dist_to_pipe = self.pipeX[self.scoringTube] - self.BIRD_X
-            dist_to_opening_bottom = self.bottomPipes[self.scoringTube].topleft[1] - self.BIRD_Y
-            dist_to_opening_top = self.topPipes[self.scoringTube].bottomleft[1] - self.BIRD_Y
-            
-            if model_given and Model.should_jump(dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, self.bird_velocity):
-                self.bird_velocity = -6
+                    # reset pipe if off screen
+                    if self.pipeX[i] < -self.PIPE_WIDTH:
+                        self.pipeX[i] = self.NUM_PIPES * self.PIPE_DISTANCE
+                        self.pipeOffset[i] = self.get_rand_gap()
+
+                # get distances to objects
+                dist_to_top = self.BIRD_Y
+                dist_to_bottom = self.WINDOW_HEIGHT - self.BIRD_Y
+                dist_to_pipe = self.pipeX[self.scoringTube] - self.BIRD_X
+                dist_to_opening_bottom = self.bottomPipes[self.scoringTube].topleft[1] - self.BIRD_Y
+                dist_to_opening_top = self.topPipes[self.scoringTube].bottomleft[1] - self.BIRD_Y
+                
+                if model_given and Model.should_jump(dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, self.bird_velocity):
+                    self.bird_velocity = -6
 
 
-            # draw bird
-            if self.BIRD_Y <= self.WINDOW_HEIGHT or self.bird_velocity <= 0:
-                self.bird_velocity = self.bird_velocity + self.GRAVITY
-                self.BIRD_Y += int(self.bird_velocity)
+                # draw bird
+                if self.BIRD_Y <= self.WINDOW_HEIGHT or self.bird_velocity <= 0:
+                    self.bird_velocity = self.bird_velocity + self.GRAVITY
+                    self.BIRD_Y += int(self.bird_velocity)
             birdCircle = pygame.draw.circle(screen, (255, 0, 0), (self.BIRD_X, self.BIRD_Y), self.BIRD_RADIUS)
 
             # check if point has been scored
