@@ -36,6 +36,9 @@ class ValueLearning(Model):
         self.state_size = state_size
         self.action_size = action_size
         self.replay_buffer = replay_buffer
+        self.epsilon = 1.0  # Start with 100% exploration
+        self.epsilon_decay = 0.995
+        self.epsilon_min = 0.01
         
         self.model = torch.nn.Sequential(
             torch.nn.Linear(state_size, 64),
@@ -47,11 +50,19 @@ class ValueLearning(Model):
         self.loss_fn = torch.nn.MSELoss()
 
     def should_jump(self, dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, current_velocity) -> bool:
+        # Epsilon-greedy action selection
+        if np.random.random() < self.epsilon:
+            return bool(np.random.randint(2))  # Random action
+            
         with torch.no_grad():
             inputs = np.array([dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, current_velocity])
             inputs = torch.tensor(inputs, dtype=torch.float32)
             inputs = inputs.reshape(1, 6)
             q_values = self.model(inputs)
+            
+            # Decay epsilon
+            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+            
             return q_values[0, 1] > q_values[0, 0]  
         
     def update(self, batch_size=128):
