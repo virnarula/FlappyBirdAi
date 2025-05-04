@@ -201,10 +201,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     model = None
-    if args.model_path and args.model_type:
+    if args.model_type:
         if args.model_type == 'SimpleModel':
             model = SimpleModel()
+            if args.model_path:
+                print("Warning: SimpleModel does not use a model path. The provided path will be ignored.")
         elif args.model_type == 'ValueLearning':
+            if not args.model_path:
+                print("Error: ValueLearning requires a model path")
+                sys.exit(1)
             model = ValueLearning(state_size=6, action_size=2, replay_buffer=None)
             model.model.load_state_dict(torch.load(args.model_path))
             model.model.eval()
@@ -212,10 +217,13 @@ if __name__ == "__main__":
             model = PolicyLearning()
             # Implement model loading here
         elif args.model_type == 'Perceptron':
+            if not args.model_path:
+                print("Error: Perceptron requires a model path")
+                sys.exit(1)
             model = Perceptron()
             model.model.load_weights(args.model_path)
     else:
-        if args.model_path or args.model_type:
+        if args.model_path:
             print("Both --model_path and --model_type must be provided to load a model")
             sys.exit(1)
 
