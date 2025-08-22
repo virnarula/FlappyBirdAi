@@ -12,6 +12,7 @@ Contains:
 import pygame
 import random
 import math
+import logging
 from model import SimpleModel
 
 class game():
@@ -74,13 +75,29 @@ class game():
 
         return False  # no collision detected
 
-    def run_game(self, Model):
+    def run_game(self, Model, debug=False, debug_file=None, debug_state_interval=0):
         # On Creation
         model_given = Model is not None
         pygame.init()
         screen = pygame.display.set_mode([self.WINDOW_WIDTH, self.WINDOW_HEIGHT])
         running = True
         game_started = model_given  # Start immediately if model is given
+
+        # Debug logging setup
+        logger = None
+        if debug:
+            logger = logging.getLogger("flappy_debug")
+            logger.handlers = []
+            logger.setLevel(logging.INFO)
+            formatter = logging.Formatter('%(message)s')
+            if debug_file:
+                fh = logging.FileHandler(debug_file, mode='w')
+                fh.setFormatter(formatter)
+                logger.addHandler(fh)
+            else:
+                sh = logging.StreamHandler()
+                sh.setFormatter(formatter)
+                logger.addHandler(sh)
 
         for i in range(0, self.NUM_PIPES):
             self.pipeX.append(self.WINDOW_WIDTH + i * self.PIPE_DISTANCE)
@@ -90,6 +107,7 @@ class game():
             self.pipeOffset.append(self.get_rand_gap())
 
         # Game loop
+        frame = 0
         while running:
             dist_to_top = 0
             dist_to_bottom = 0
@@ -134,8 +152,27 @@ class game():
                 dist_to_opening_bottom = self.bottomPipes[self.scoringTube].topleft[1] - self.BIRD_Y
                 dist_to_opening_top = self.topPipes[self.scoringTube].bottomleft[1] - self.BIRD_Y
                 
-                if model_given and Model.should_jump(dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, self.bird_velocity):
-                    self.bird_velocity = -6
+                if model_given:
+                    do_jump = Model.should_jump(dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, self.bird_velocity)
+                    if do_jump:
+                        self.bird_velocity = -6
+                    if debug and logger is not None:
+                        should_log_state = (debug_state_interval and frame % max(1, debug_state_interval) == 0)
+                        if do_jump or should_log_state:
+                            logger.info(
+                                "event=%s frame=%d score=%d pipe_idx=%d dist_pipe=%.1f y=%d vel=%.2f open_top_rel=%.1f open_bot_rel=%.1f top=%.1f bottom=%.1f",
+                                ("JUMP" if do_jump else "STATE"),
+                                frame,
+                                self.score,
+                                self.scoringTube,
+                                dist_to_pipe,
+                                self.BIRD_Y,
+                                self.bird_velocity,
+                                dist_to_opening_top,
+                                dist_to_opening_bottom,
+                                dist_to_top,
+                                dist_to_bottom,
+                            )
 
 
                 # draw bird
@@ -148,6 +185,8 @@ class game():
             if self.pipeX[self.scoringTube] < self.WINDOW_WIDTH / 2 - self.PIPE_WIDTH:
                 self.score += 1
                 print("score: " + str(self.score))
+                if debug and logger is not None:
+                    logger.info("event=POINT frame=%d score=%d pipe_idx=%d", frame, self.score, self.scoringTube)
                 self.scoringTube += 1
                 if self.scoringTube == self.NUM_PIPES:
                     self.scoringTube = 0
@@ -155,9 +194,13 @@ class game():
             # Check for out of bounds
             if self.BIRD_Y > self.WINDOW_HEIGHT:
                 print("Bird hit the floor")
+                if debug and logger is not None:
+                    logger.info("event=CRASH reason=floor frame=%d y=%d vel=%.2f score=%d", frame, self.BIRD_Y, self.bird_velocity, self.score)
                 running = False
             if self.BIRD_Y < 0:
                 print("Bird hit the ceiling")
+                if debug and logger is not None:
+                    logger.info("event=CRASH reason=ceiling frame=%d y=%d vel=%.2f score=%d", frame, self.BIRD_Y, self.bird_velocity, self.score)
                 running = False
             
             # Check for collisions
@@ -165,16 +208,21 @@ class game():
                 if self.collision(self.bottomPipes[i].left, self.bottomPipes[i].top, self.bottomPipes[i].width, self.bottomPipes[i].height, self.BIRD_X,
                             self.BIRD_Y, self.BIRD_RADIUS):
                     print("Collision with bottom tube")
+                    if debug and logger is not None:
+                        logger.info("event=CRASH reason=bottom_pipe frame=%d y=%d vel=%.2f score=%d pipe_idx=%d", frame, self.BIRD_Y, self.bird_velocity, self.score, i)
                     running = False
                 if self.collision(self.topPipes[i].left, self.topPipes[i].top, self.topPipes[i].width, self.topPipes[i].height, self.BIRD_X, self.BIRD_Y,
                             self.BIRD_RADIUS):
                     print("Collision with top tube")
+                    if debug and logger is not None:
+                        logger.info("event=CRASH reason=top_pipe frame=%d y=%d vel=%.2f score=%d pipe_idx=%d", frame, self.BIRD_Y, self.bird_velocity, self.score, i)
                     running = False
 
             pygame.display.flip()
             # TODO:: maybe it should not be delaying if a model is given? 
             # or model is given and it is being used for training?
             pygame.time.delay(9)
+            frame += 1
 
         if Model is not None:
             pygame.quit()
@@ -198,6 +246,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run Flappy Bird game with optional model")
     parser.add_argument('--model_path', type=str, help='Path to the model file')
     parser.add_argument('--model_type', type=str, choices=['SimpleModel', 'ValueLearning', 'PolicyLearning', 'Perceptron'], help='Type of the model')
+    parser.add_argument('--debug', action='store_true', help='Enable concise debug logs for model decisions and key events')
+    parser.add_argument('--debug_file', type=str, help='Write debug logs to this file instead of stdout')
+    parser.add_argument('--debug_state_interval', type=int, default=0, help='If >0, log a compact state every N frames')
     args = parser.parse_args()
 
     model = None
@@ -228,7 +279,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
     Game = game()
-    score = Game.run_game(model)
+    score = Game.run_game(model, debug=args.debug, debug_file=args.debug_file, debug_state_interval=args.debug_state_interval)
     if score is not None:
         print("Score: " + str(score))
     else:
