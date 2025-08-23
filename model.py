@@ -11,6 +11,9 @@ Contains implementations of:
 
 import torch
 import numpy as np
+import torch.nn as nn
+from collections import deque
+import random
  
 # Abstract class for interfacing with game
 class Model():
@@ -108,64 +111,169 @@ class SimpleModel(Model):
         return should
     
 class ValueLearning(Model):
-    def __init__(self, state_size, action_size, replay_buffer) -> None:
+    def __init__(self,
+                 state_size: int = 6,
+                 action_size: int = 2,
+                 gamma: float = 0.99,
+                 learning_rate: float = 1e-3,
+                 buffer_capacity: int = 100000,
+                 batch_size: int = 256,
+                 min_buffer_size: int = 2000,
+                 target_update_interval: int = 1000,
+                 epsilon_start: float = 1.0,
+                 epsilon_end: float = 0.05,
+                 epsilon_decay_steps: int = 50000,
+                 device: str = None) -> None:
         self.state_size = state_size
         self.action_size = action_size
-        self.replay_buffer = replay_buffer
-        self.epsilon = 1.0  # Start with 100% exploration
-        self.epsilon_decay = 0.995
-        self.epsilon_min = 0.01
-        
-        self.model = torch.nn.Sequential(
-            torch.nn.Linear(state_size, 64),
-            torch.nn.BatchNorm1d(64),
-            torch.nn.ReLU(),
-            torch.nn.Linear(64, action_size)
+        self.gamma = gamma
+        self.batch_size = batch_size
+        self.min_buffer_size = min_buffer_size
+        self.target_update_interval = target_update_interval
+
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Online and target networks
+        self.q_network = nn.Sequential(
+            nn.Linear(state_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_size),
         )
-        self.optimizer = torch.optim.Adam(self.model.parameters())
-        self.loss_fn = torch.nn.MSELoss()
+        self.target_network = nn.Sequential(
+            nn.Linear(state_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_size),
+        )
+        self.target_network.load_state_dict(self.q_network.state_dict())
+        self.q_network.to(self.device)
+        self.target_network.to(self.device)
+
+        self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=learning_rate)
+        self.loss_fn = nn.SmoothL1Loss()  # Huber loss
+
+        # Experience replay
+        self.replay = deque(maxlen=buffer_capacity)
+
+        # Epsilon-greedy schedule
+        self.epsilon_start = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay_steps = max(1, epsilon_decay_steps)
+        self.total_steps = 0
+
+        # Episode tracking
+        self._last_state = None
+        self._last_action = None
+        self._is_training = True
+
+        # Heuristic scales for normalization
+        self._norm_scales = np.array([800.0, 800.0, 600.0, 800.0, 800.0, 10.0], dtype=np.float32)
+        # Jump cooldown management to stabilize early training
+        self._jump_cooldown_frames = 8
+        self._frames_since_jump = 999
+
+    def set_training(self, is_training: bool) -> None:
+        self._is_training = is_training
+        self.q_network.train(is_training)
+        self.target_network.train(False)
+
+    def _epsilon(self) -> float:
+        # Exponential-style decay over steps
+        progress = min(1.0, self.total_steps / float(self.epsilon_decay_steps))
+        return self.epsilon_end + (self.epsilon_start - self.epsilon_end) * (1.0 - progress)
+
+    def _to_state(self, dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, current_velocity):
+        state = np.array([
+            dist_to_top,
+            dist_to_bottom,
+            dist_to_pipe,
+            dist_to_opening_bottom,
+            dist_to_opening_top,
+            current_velocity,
+        ], dtype=np.float32)
+        # Normalize to roughly [-1, 1]
+        state = state / self._norm_scales
+        return state
+
+    def _select_action(self, state_np: np.ndarray) -> int:
+        self.total_steps += 1
+        if self._is_training and random.random() < self._epsilon():
+            return random.randint(0, self.action_size - 1)
+        with torch.no_grad():
+            state_t = torch.tensor(state_np, dtype=torch.float32, device=self.device).unsqueeze(0)
+            q_values = self.q_network(state_t)
+            return int(torch.argmax(q_values, dim=1).item())
 
     def should_jump(self, dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, current_velocity) -> bool:
-        # Epsilon-greedy action selection
-        if np.random.random() < self.epsilon:
-            return bool(np.random.randint(2))  # Random action
-            
-        with torch.no_grad():
-            inputs = np.array([dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, current_velocity])
-            inputs = torch.tensor(inputs, dtype=torch.float32)
-            inputs = inputs.reshape(1, 6)
-            q_values = self.model(inputs)
-            
-            # Decay epsilon
-            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-            
-            return q_values[0, 1] > q_values[0, 0]  
-        
-    def update(self, batch_size=128):
-        assert self.replay_buffer is not None, "Replay buffer is not initialized"
-        if len(self.replay_buffer) < batch_size:
+        state = self._to_state(dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, current_velocity)
+        action = self._select_action(state)
+        # Enforce minimal cooldown between jumps
+        if action == 1 and self._frames_since_jump < self._jump_cooldown_frames:
+            action = 0
+        # Track cooldown
+        if action == 1:
+            self._frames_since_jump = 0
+        else:
+            self._frames_since_jump += 1
+        self._last_state = state
+        self._last_action = action
+        return action == 1  # 1 => jump, 0 => no jump
+
+    def observe(self, reward: float, done: bool, next_state_tuple) -> None:
+        if self._last_state is None or self._last_action is None:
+            # First frame of episode; nothing to store yet
             return
-        
-        batch = self.replay_buffer.sample(batch_size)
+        next_state = self._to_state(*next_state_tuple)
+        self.replay.append((self._last_state, self._last_action, reward, next_state, float(done)))
+        self._last_state = next_state
+        if done:
+            self._last_state = None
+            self._last_action = None
+        # Learn
+        if self._is_training and len(self.replay) >= self.min_buffer_size:
+            self._learn_from_replay()
+
+    def _learn_from_replay(self) -> None:
+        batch_size = min(self.batch_size, len(self.replay))
+        batch = random.sample(self.replay, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
-        
-        states = torch.tensor(states, dtype=torch.float32)
-        actions = torch.tensor(actions, dtype=torch.long)
-        rewards = torch.tensor(rewards, dtype=torch.float32)
-        next_states = torch.tensor(next_states, dtype=torch.float32)
-        dones = torch.tensor(dones, dtype=torch.float32)
-        
-        current_q = self.model(states).gather(1, actions)
-        max_next_q = self.model(next_states).max(1)[0].detach()
-        expected_q = rewards + (1 - dones) * max_next_q
-        
-        loss = self.loss_fn(current_q, expected_q)
+
+        states_t = torch.tensor(np.array(states), dtype=torch.float32, device=self.device)
+        actions_t = torch.tensor(actions, dtype=torch.long, device=self.device).unsqueeze(1)
+        rewards_t = torch.tensor(rewards, dtype=torch.float32, device=self.device).unsqueeze(1)
+        next_states_t = torch.tensor(np.array(next_states), dtype=torch.float32, device=self.device)
+        dones_t = torch.tensor(dones, dtype=torch.float32, device=self.device).unsqueeze(1)
+
+        # Q(s,a)
+        q_values = self.q_network(states_t).gather(1, actions_t)
+        # max_a' Q_target(s',a')
+        with torch.no_grad():
+            max_next_q = self.target_network(next_states_t).max(dim=1, keepdim=True)[0]
+            target = rewards_t + (1.0 - dones_t) * self.gamma * max_next_q
+
+        loss = self.loss_fn(q_values, target)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        
-    def save(self, filename):
-        torch.save(self.model.state_dict(), filename)
+
+        # Periodic target update
+        if self.total_steps % self.target_update_interval == 0:
+            self.target_network.load_state_dict(self.q_network.state_dict())
+
+    def begin_episode(self) -> None:
+        self._last_state = None
+        self._last_action = None
+
+    def save(self, filename: str) -> None:
+        torch.save(self.q_network.state_dict(), filename)
+
+    def load(self, filename: str) -> None:
+        state = torch.load(filename, map_location=self.device)
+        self.q_network.load_state_dict(state)
+        self.target_network.load_state_dict(self.q_network.state_dict())
 
 class PolicyLearning(Model):
     def __init__(self) -> None:

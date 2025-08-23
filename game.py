@@ -13,6 +13,7 @@ import pygame
 import random
 import math
 import logging
+import os
 from model import SimpleModel
 
 class game():
@@ -39,7 +40,7 @@ class game():
         self.BIRD_X = int(self.WINDOW_WIDTH / 2 - self.BIRD_RADIUS / 2)
         self.BIRD_Y = int(self.WINDOW_HEIGHT / 2 - self.BIRD_RADIUS / 2)
         self.GRAVITY = 0.2
-        self.bird_velocity = -6
+        self.bird_velocity = 0
         self.score = 0
         self.scoringTube = 0
         
@@ -75,13 +76,20 @@ class game():
 
         return False  # no collision detected
 
-    def run_game(self, Model, debug=False, debug_file=None, debug_state_interval=0):
+    def run_game(self, Model, debug=False, debug_file=None, debug_state_interval=0, train=False, headless=False, easy_mode=False):
         # On Creation
         model_given = Model is not None
+        if headless:
+            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
         pygame.init()
         screen = pygame.display.set_mode([self.WINDOW_WIDTH, self.WINDOW_HEIGHT])
         running = True
         game_started = model_given  # Start immediately if model is given
+
+        # Apply easy mode tweaks for training stability
+        if model_given and train and easy_mode:
+            self.PIPE_GAP = int(self.PIPE_GAP * 1.6)
+            self.GRAVITY = 0.15
 
         # Debug logging setup
         logger = None
@@ -106,8 +114,16 @@ class game():
             self.topPipes.append(None)
             self.pipeOffset.append(self.get_rand_gap())
 
+        # If training, let the model know a new episode starts
+        if model_given and train and hasattr(Model, 'begin_episode'):
+            Model.set_training(True) if hasattr(Model, 'set_training') else None
+            Model.begin_episode()
+            # Start with neutral velocity to avoid immediate ceiling hits during training
+            self.bird_velocity = 0
+
         # Game loop
         frame = 0
+        frames_since_start = 0
         while running:
             dist_to_top = 0
             dist_to_bottom = 0
@@ -145,17 +161,24 @@ class game():
                         self.pipeX[i] = self.NUM_PIPES * self.PIPE_DISTANCE
                         self.pipeOffset[i] = self.get_rand_gap()
 
-                # get distances to objects
+                # get distances to objects (state before action)
                 dist_to_top = self.BIRD_Y
                 dist_to_bottom = self.WINDOW_HEIGHT - self.BIRD_Y
                 dist_to_pipe = self.pipeX[self.scoringTube] - self.BIRD_X
                 dist_to_opening_bottom = self.bottomPipes[self.scoringTube].topleft[1] - self.BIRD_Y
                 dist_to_opening_top = self.topPipes[self.scoringTube].bottomleft[1] - self.BIRD_Y
-                
+                # Alignment metric relative to gap center (smaller absolute is better)
+                gap_center_before = (dist_to_opening_top + dist_to_opening_bottom) / 2.0
+
+                last_action_jump = False
                 if model_given:
                     do_jump = Model.should_jump(dist_to_top, dist_to_bottom, dist_to_pipe, dist_to_opening_bottom, dist_to_opening_top, self.bird_velocity)
+                    # Training warmup: ignore jumps for the first few frames to stabilize
+                    if train and frames_since_start < 15:
+                        do_jump = False
                     if do_jump:
                         self.bird_velocity = -6
+                        last_action_jump = True
                     if debug and logger is not None:
                         should_log_state = (debug_state_interval and frame % max(1, debug_state_interval) == 0)
                         if do_jump or should_log_state:
@@ -175,32 +198,46 @@ class game():
                             )
 
 
-                # draw bird
+                # Physics update
                 if self.BIRD_Y <= self.WINDOW_HEIGHT or self.bird_velocity <= 0:
                     self.bird_velocity = self.bird_velocity + self.GRAVITY
                     self.BIRD_Y += int(self.bird_velocity)
             birdCircle = pygame.draw.circle(screen, (255, 0, 0), (self.BIRD_X, self.BIRD_Y), self.BIRD_RADIUS)
 
-            # check if point has been scored
+            # reward shaping and score detection
+            reward = 0.01 if (model_given and train) else 0.0  # small survival reward
+            # Penalize unnecessary jumps and jumps near the ceiling (stabilizes early training)
+            if model_given and train and last_action_jump:
+                reward -= 0.002
+                if dist_to_top < 40:
+                    reward -= 0.02
+            scored_point = False
             if self.pipeX[self.scoringTube] < self.WINDOW_WIDTH / 2 - self.PIPE_WIDTH:
                 self.score += 1
                 print("score: " + str(self.score))
                 if debug and logger is not None:
                     logger.info("event=POINT frame=%d score=%d pipe_idx=%d", frame, self.score, self.scoringTube)
+                scored_point = True
+                reward += 1.0 if (model_given and train) else 0.0
                 self.scoringTube += 1
                 if self.scoringTube == self.NUM_PIPES:
                     self.scoringTube = 0
                     
             # Check for out of bounds
+            done = False
             if self.BIRD_Y > self.WINDOW_HEIGHT:
                 print("Bird hit the floor")
                 if debug and logger is not None:
                     logger.info("event=CRASH reason=floor frame=%d y=%d vel=%.2f score=%d", frame, self.BIRD_Y, self.bird_velocity, self.score)
+                done = True
+                reward += -1.0 if (model_given and train) else 0.0
                 running = False
             if self.BIRD_Y < 0:
                 print("Bird hit the ceiling")
                 if debug and logger is not None:
                     logger.info("event=CRASH reason=ceiling frame=%d y=%d vel=%.2f score=%d", frame, self.BIRD_Y, self.bird_velocity, self.score)
+                done = True
+                reward += -1.0 if (model_given and train) else 0.0
                 running = False
             
             # Check for collisions
@@ -210,19 +247,45 @@ class game():
                     print("Collision with bottom tube")
                     if debug and logger is not None:
                         logger.info("event=CRASH reason=bottom_pipe frame=%d y=%d vel=%.2f score=%d pipe_idx=%d", frame, self.BIRD_Y, self.bird_velocity, self.score, i)
+                    done = True
+                    reward += -1.0 if (model_given and train) else 0.0
                     running = False
                 if self.collision(self.topPipes[i].left, self.topPipes[i].top, self.topPipes[i].width, self.topPipes[i].height, self.BIRD_X, self.BIRD_Y,
                             self.BIRD_RADIUS):
                     print("Collision with top tube")
                     if debug and logger is not None:
                         logger.info("event=CRASH reason=top_pipe frame=%d y=%d vel=%.2f score=%d pipe_idx=%d", frame, self.BIRD_Y, self.bird_velocity, self.score, i)
+                    done = True
+                    reward += -1.0 if (model_given and train) else 0.0
                     running = False
 
+            # Next state tuple after physics update
+            next_state_tuple = (
+                self.BIRD_Y,
+                self.WINDOW_HEIGHT - self.BIRD_Y,
+                self.pipeX[self.scoringTube] - self.BIRD_X,
+                self.bottomPipes[self.scoringTube].topleft[1] - self.BIRD_Y,
+                self.topPipes[self.scoringTube].bottomleft[1] - self.BIRD_Y,
+                self.bird_velocity,
+            )
+
+            # Shaping: reward improvement towards gap center alignment
+            if model_given and train:
+                gap_center_after = (next_state_tuple[3] + next_state_tuple[4]) / 2.0
+                reward += 0.002 * (abs(gap_center_before) - abs(gap_center_after))
+
+            # Feed transition to model if training
+            if model_given and train and hasattr(Model, 'observe'):
+                Model.observe(reward, done, next_state_tuple)
+
             pygame.display.flip()
-            # TODO:: maybe it should not be delaying if a model is given? 
-            # or model is given and it is being used for training?
-            pygame.time.delay(9)
+            # Speed up when training/headless
+            if model_given and (train or headless):
+                pygame.time.delay(0)
+            else:
+                pygame.time.delay(9)
             frame += 1
+            frames_since_start += 1
 
         if Model is not None:
             pygame.quit()
@@ -249,6 +312,9 @@ if __name__ == "__main__":
     parser.add_argument('--debug', action='store_true', help='Enable concise debug logs for model decisions and key events')
     parser.add_argument('--debug_file', type=str, help='Write debug logs to this file instead of stdout')
     parser.add_argument('--debug_state_interval', type=int, default=0, help='If >0, log a compact state every N frames')
+    parser.add_argument('--train', action='store_true', help='If set, run in training mode when a model is provided')
+    parser.add_argument('--headless', action='store_true', help='If set, run without opening a window (SDL dummy)')
+    parser.add_argument('--easy_mode', action='store_true', help='If set, run in easy mode for training stability')
     args = parser.parse_args()
 
     model = None
@@ -261,9 +327,9 @@ if __name__ == "__main__":
             if not args.model_path:
                 print("Error: ValueLearning requires a model path")
                 sys.exit(1)
-            model = ValueLearning(state_size=6, action_size=2, replay_buffer=None)
-            model.model.load_state_dict(torch.load(args.model_path))
-            model.model.eval()
+            model = ValueLearning(state_size=6, action_size=2)
+            model.load(args.model_path)
+            model.set_training(False)
         elif args.model_type == 'PolicyLearning':
             model = PolicyLearning()
             # Implement model loading here
@@ -279,7 +345,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
     Game = game()
-    score = Game.run_game(model, debug=args.debug, debug_file=args.debug_file, debug_state_interval=args.debug_state_interval)
+    score = Game.run_game(model, debug=args.debug, debug_file=args.debug_file, debug_state_interval=args.debug_state_interval, train=args.train, headless=args.headless, easy_mode=args.easy_mode)
     if score is not None:
         print("Score: " + str(score))
     else:
