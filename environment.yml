@@ -1,0 +1,13 @@
+name: flappybird-ai
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pygame
+  - pip:
+      - torch>=2.2
+      - tensorflow-macos>=2.15
+      - tensorflow-metal>=1.1
